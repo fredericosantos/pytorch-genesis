@@ -10,7 +10,7 @@
 </div>
  
 ## Description   
-Evolutionary Deep Learning. Evolve PyTorch Lightning models from scratch using Genetic Algorithms & Backpropagation. All using default PyTorch and Lightning-AI (PyTorch Lightning & Bolts).
+Evolve PyTorch Lightning models from scratch using Genetic Algorithms & Backpropagation. All using default PyTorch and Lightning-AI (PyTorch Lightning & Bolts).
 
 ## How to run   
 First, install dependencies   
