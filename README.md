@@ -16,7 +16,7 @@ The goal of this seed is to structure ML paper-code the same so that work can ea
 
 <div align="center">    
  
-# Your Project Name     
+# PyTorch Genesis     
 [![Paper](https://img.shields.io/badge/paper-doi.org%2F10.1016%2Fj.asoc.2023.110767-red)](https://authors.elsevier.com/sd/article/S1568494623007858)
 ![CI testing](https://github.com/PyTorchLightning/deep-learning-project-template/workflows/CI%20testing/badge.svg?branch=master&event=push)
 
