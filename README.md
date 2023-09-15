@@ -15,10 +15,9 @@ The goal of this seed is to structure ML paper-code the same so that work can ea
 ---
 
 <div align="center">    
- 
-# PyTorch Genesis     
+ <img alt="PyTorch Genesis" src="https://github.com/fredericosantos/pytorch-genesis/blob/master/pytorch_genesis_logo_text.png" width="800px" style="max-width: 100%;">
+
 [![Paper](https://img.shields.io/badge/paper-doi.org%2F10.1016%2Fj.asoc.2023.110767-red)](https://authors.elsevier.com/sd/article/S1568494623007858)
-![CI testing](https://github.com/PyTorchLightning/deep-learning-project-template/workflows/CI%20testing/badge.svg?branch=master&event=push)
 
 </div>
  
@@ -68,10 +67,10 @@ trainer.test(test_dataloaders=test)
 
 ### Citation   
 ```
-@article{YourName,
-  title={Your Title},
-  author={Your team},
-  journal={Location},
-  year={Year}
+@article{Frederico J.J.B. Santos, 
+  title={Neuroevolution with box mutation: An adaptive and modular framework for evolving deep neural networks},
+  author={Ivo Gonçalves, Mauro Castelli},
+  journal={Applied Soft Computing},
+  year={2023}
 }
 ```   
