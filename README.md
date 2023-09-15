@@ -3,7 +3,7 @@
 <div align="center"> 
 
  
- <img alt="PyTorch Genesis" src="https://github.com/fredericosantos/pytorch-genesis/blob/master/pytorch_genesis_logo_text.png" width="800px" style="max-width: 100%;">
+ <img alt="PyTorch Genesis" src="https://github.com/fredericosantos/pytorch-genesis/blob/master/pytorch_genesis_logo_text_2_png" width="800px" style="max-width: 100%;">
 
 [![Paper](https://img.shields.io/badge/paper-doi.org%2F10.1016%2Fj.asoc.2023.110767-red)](https://authors.elsevier.com/sd/article/S1568494623007858)
 
