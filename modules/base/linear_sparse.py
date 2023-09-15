@@ -1,12 +1,11 @@
-from typing import Callable, Optional, Union, Literal
+from typing import Optional
 import torch as torch
 
 # Model building
-from torch import BoolTensor, Tensor
+from torch import Tensor
 from torch.nn import Parameter, Linear
 from torch.nn import functional as F
 
-from modules.hyperparams_options import *
 
 class LinearSparse(Linear):
     def __init__(
@@ -26,11 +25,27 @@ class LinearSparse(Linear):
         self._update_sparsity()
 
     def forward(self, input: Tensor) -> Tensor:
-        weight = (self.weight * self.weight_mask) if hasattr(self, "weight_mask") else self.weight
-        bias = None if not self._bias else (self.bias * self.bias_mask) if hasattr(self, "bias_mask") else self.bias
-        return F.linear(input=input, weight=weight, bias=bias,)
+        weight = (
+            (self.weight * self.weight_mask)
+            if hasattr(self, "weight_mask")
+            else self.weight
+        )
+        bias = (
+            None
+            if not self._bias
+            else (self.bias * self.bias_mask)
+            if hasattr(self, "bias_mask")
+            else self.bias
+        )
+        return F.linear(
+            input=input,
+            weight=weight,
+            bias=bias,
+        )
 
-    def add_connections(self, sparsity: float = 0.0, device: Optional[str] = None) -> None:
+    def add_connections(
+        self, sparsity: float = 0.0, device: Optional[str] = None
+    ) -> None:
         n_avail_cxts = self.available_connections.sum()
         total_cxts = n_avail_cxts + self.weight_mask.data.sum()
         n_cxts = self._calculate_num_cxts(sparsity, n_avail_cxts, total_cxts)
@@ -38,9 +53,13 @@ class LinearSparse(Linear):
         weight_mask_og = self.weight_mask.clone()
         while cxts_counter < n_cxts:
             missing_cxts = n_cxts - cxts_counter
-            neurons_prob = torch.ones_like(self.available_nodes) / len(self.available_nodes)
+            neurons_prob = torch.ones_like(self.available_nodes) / len(
+                self.available_nodes
+            )
             idx = torch.multinomial(neurons_prob, missing_cxts, replacement=True)
-            chosen_neurons, cxts_per_neuron = torch.unique(self.available_nodes[idx], return_counts=True)
+            chosen_neurons, cxts_per_neuron = torch.unique(
+                self.available_nodes[idx], return_counts=True
+            )
 
             # This ensures that each neuron has at least one connection
             if cxts_counter == 0 and self.sparsity == 1:
@@ -63,11 +82,13 @@ class LinearSparse(Linear):
         mask = (self.weight_mask - weight_mask_og) == 1
         self._register_weight_mask(mask)
 
-    def remove_connections(self, sparsity: float = 1.0, device: Optional[str] = None) -> None:
+    def remove_connections(
+        self, sparsity: float = 1.0, device: Optional[str] = None
+    ) -> None:
         """
         Remove connections on the module.
-        Set `sparsity` to `1.0` to remove all connections from module except one connection
-        per neuron.
+        Set `sparsity` to `1.0` to remove all connections from module
+        except one connection per neuron.
         Args:
             sparsity (float): The sparsity of the module.
         """
@@ -92,19 +113,27 @@ class LinearSparse(Linear):
         if hasattr(self, "weight_mask"):
             ifw *= self.weight_mask.data == 0
 
-        self.cxt_probs = torch.divide(ifw, ifw.sum(1, keepdim=True), out=ifw,).nan_to_num_(0.0)
+        self.cxt_probs = torch.divide(
+            ifw,
+            ifw.sum(1, keepdim=True),
+            out=ifw,
+        ).nan_to_num_(0.0)
 
         self.available_connections = self.cxt_probs != 0
         self.available_nodes = self.available_connections.sum(1).nonzero().flatten()
 
         if self.sparse:
             total_cxts = torch.numel(self.weight) * self.out_features
-            self.register_buffer("sparsity", self.available_connections.sum() / total_cxts)
+            self.register_buffer(
+                "sparsity", self.available_connections.sum() / total_cxts
+            )
         else:
             self.register_buffer("sparsity", torch.tensor(0.0))
 
     def _register_weight(self, weight: Tensor, requires_grad: bool = True):
-        self.register_parameter("weight", Parameter(weight, requires_grad=requires_grad))
+        self.register_parameter(
+            "weight", Parameter(weight, requires_grad=requires_grad)
+        )
         self.in_features = weight.shape[1]
         self.out_features = weight.shape[0]
 
@@ -117,14 +146,19 @@ class LinearSparse(Linear):
         if self._bias:
             delattr(self, "bias")
             with torch.no_grad():
-                self.register_parameter("bias", Parameter(bias, requires_grad=requires_grad))
+                self.register_parameter(
+                    "bias", Parameter(bias, requires_grad=requires_grad)
+                )
 
     def _register_bias_mask(self):
         if self._bias and hasattr(self, "weight_mask"):
             self.register_buffer("bias_mask", self.weight_mask.sum(1).clip(max=1))
 
     def _calculate_num_cxts(
-        self, sparsity: float, n_avail_cxts: int, total_cxts: int,
+        self,
+        sparsity: float,
+        n_avail_cxts: int,
+        total_cxts: int,
     ):
         assert 0 <= sparsity <= 1, f"{sparsity = } must be between 0 and 1"
         density = 1 - sparsity

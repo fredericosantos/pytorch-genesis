@@ -20,6 +20,7 @@ def get_datamodule(
     batch_size: int = 256,
     val_split: float = 0.1,
     num_workers: int = 20,
+    transforms: bool = True,
 ):
     if dataset_name == "MNIST":
         train_transforms = torchvision.transforms.Compose(
@@ -40,9 +41,9 @@ def get_datamodule(
             batch_size=batch_size,
             num_workers=num_workers,
             shuffle=True,
-            train_transforms=train_transforms,
-            test_transforms=test_transforms,
-            val_transforms=test_transforms,
+            train_transforms=train_transforms if transforms else None,
+            test_transforms=test_transforms if transforms else None,
+            val_transforms=test_transforms if transforms else None,
         )
 
     elif dataset_name == "FashionMNIST":
@@ -65,9 +66,9 @@ def get_datamodule(
             batch_size=batch_size,
             num_workers=num_workers,
             shuffle=True,
-            train_transforms=train_transforms,
-            test_transforms=test_transforms,
-            val_transforms=test_transforms,
+            train_transforms=train_transforms if transforms else None,
+            test_transforms=test_transforms if transforms else None,
+            val_transforms=test_transforms if transforms else None,
         )
     else:
         raise ValueError(f"Unknown dataset name: {dataset_name}")

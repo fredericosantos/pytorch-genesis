@@ -1,22 +1,21 @@
-from typing import Callable, Optional, Literal, Any, List, get_args
-from numpy import block
-from torch import Tensor
+from typing import Callable, Optional, Literal, get_args
 from torch.nn import (
-    Module,
     Identity,
     LayerNorm,
     BatchNorm1d,
     BatchNorm2d,
-    BatchNorm3d,
     InstanceNorm1d,
     InstanceNorm2d,
-    InstanceNorm3d,
     Dropout,
     Dropout2d,
     GroupNorm,
 )
-import torch.nn as nn
-from modules.hyperparams_options import *
+from modules.hyperparams_options import (
+    REGULARIZATIONS,
+    BLOCK_TYPES,
+    CONV_TYPES,
+    LINEAR_TYPES,
+)
 
 DYNAMIC_NORM: Literal = Literal["BatchNorm", "InstanceNorm"]
 
@@ -28,7 +27,11 @@ def adjust_fn_to_block_type(fn: DYNAMIC_NORM, block_type: BLOCK_TYPES) -> dict:
         return fn + "1d"
 
 
-def get_module(fn: Optional[REGULARIZATIONS] = None, block_type: Optional[BLOCK_TYPES] = None, **kwargs,) -> Callable:
+def get_module(
+    fn: Optional[REGULARIZATIONS] = None,
+    block_type: Optional[BLOCK_TYPES] = None,
+    **kwargs,
+) -> Callable:
     if fn is None or fn == "None":
         return Identity()
     elif fn == "LayerNorm":
@@ -37,7 +40,9 @@ def get_module(fn: Optional[REGULARIZATIONS] = None, block_type: Optional[BLOCK_
         if block_type in get_args(CONV_TYPES):
             return GroupNorm(**kwargs)
         elif block_type in get_args(LINEAR_TYPES):
-            raise ValueError(f"""GroupNorm cannot be implemented for {block_type} blocks.""")
+            raise ValueError(
+                f"""GroupNorm cannot be implemented for {block_type} blocks."""
+            )
     else:
         fn = adjust_fn_to_block_type(fn, block_type)
         if fn == "BatchNorm1d":
@@ -53,7 +58,9 @@ def get_module(fn: Optional[REGULARIZATIONS] = None, block_type: Optional[BLOCK_
         elif fn == "Dropout2d":
             return Dropout2d(**kwargs)
         else:
-            raise NotImplementedError(f"""Regularization function {fn} not implemented.""")
+            raise NotImplementedError(
+                f"""Regularization function {fn} not implemented."""
+            )
 
 
 def get_hparams(
@@ -70,16 +77,24 @@ def get_hparams(
     factory_kwargs = dict(device=device, dtype=dtype)
     if fn == "LayerNorm":
         if block_type in get_args(CONV_TYPES):
-            return dict(normalized_shape=[num_features, height, width], **factory_kwargs)
+            return dict(
+                normalized_shape=[num_features, height, width], **factory_kwargs
+            )
         elif block_type in get_args(LINEAR_TYPES):
             return dict(normalized_shape=[num_features], **factory_kwargs)
     if fn == "GroupNorm":
         if block_type in get_args(CONV_TYPES):
-            return dict(num_groups=num_features // 2, num_channels=num_features, **factory_kwargs)
+            return dict(
+                num_groups=num_features // 2,
+                num_channels=num_features,
+                **factory_kwargs,
+            )
         elif block_type in get_args(LINEAR_TYPES):
-            raise ValueError(f"""GroupNorm cannot be implemented for {block_type} blocks.""")
+            raise ValueError(
+                f"""GroupNorm cannot be implemented for {block_type} blocks."""
+            )
     elif fn == "Dropout":
-        return dict(p=0.5)
+        return dict(p=0.2)
     elif fn == "BatchNorm" or fn == "InstanceNorm":
         return dict(num_features=num_features, **factory_kwargs)
     else:

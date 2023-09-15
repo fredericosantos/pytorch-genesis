@@ -16,7 +16,7 @@ WEIGHT_INITS = Literal[
 ]
 BIAS_INITS = Literal["zeros"]
 PADDING_MODES = Literal["zeros", "reflect", "replicate", "circular"]
-OPTIMIZERS = Literal["adam", "radam", "sgd"]
+OPTIMIZERS = Literal["adam", "radam", "sgd", "lion"]
 LR_SCHEDULERS = Literal["onecycle", "cosine"]
 LOSSES = Literal[
     "cross_entropy",

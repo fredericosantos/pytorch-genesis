@@ -1,11 +1,15 @@
-from typing import Literal, Optional, Tuple
+from typing import Optional, Tuple
 
 # Model building
-from torch import Tensor
 from torch.nn import Flatten
 from modules.linear.modules import MainLinear
 from modules.base.block import BaseBlock
-from modules.hyperparams_options import *
+from modules.hyperparams_options import (
+    WEIGHT_INITS,
+    BIAS_INITS,
+    REGULARIZATIONS,
+    ACTIVATIONS,
+)
 
 
 class LinearBlock(BaseBlock):
@@ -14,12 +18,12 @@ class LinearBlock(BaseBlock):
         # connection hparams
         block_branch: bool,
         connection_index: Tuple[int, int],
-        connection_weights: Tensor,
         freeze_evolved: bool,
         # block hparams
         layers_sparse: bool,
-        input_pooling: bool,
-        input_flatten: bool,
+        in_pooling: bool,
+        in_flatten: bool,
+        input_dims: Tuple[int],
         # layer hparams
         layers_bias: bool,
         layers_weight_init: Optional[WEIGHT_INITS],
@@ -42,9 +46,9 @@ class LinearBlock(BaseBlock):
         """Creates a new block.
 
         Args:
-            in_features (int): For the first block it is the 
+            in_features (int): For the first block it is the
                 number of input features. For subsequent blocks,
-                it is the number of features of the concatenated 
+                it is the number of features of the concatenated
                 layer.
             layers_sparse (bool): Whether the expansion layer's connections are sparse.
             output_sparse (bool): Whether the aggregation layer is sparse.
@@ -56,9 +60,9 @@ class LinearBlock(BaseBlock):
             block_branch=block_branch,
             freeze_evolved=freeze_evolved,
             num_outputs=num_outputs,
-            input_pooling=input_pooling,
-            input_reshape=input_flatten,
-            connection_weights=connection_weights,
+            in_pooling=in_pooling,
+            input_dims=input_dims,
+            in_reshape=in_flatten,
             connection_index=connection_index,
             layers_bias=layers_bias,
             layers_weight_init=layers_weight_init,
@@ -94,7 +98,7 @@ class LinearBlock(BaseBlock):
         regularization: REGULARIZATIONS = "Dropout",
         regularization_hparams: dict = {},
         activation_fn: ACTIVATIONS = "ReLU",
-        activation_fn_hparams: dict = {},
+        activation_fn_hparams: dict = None,
         device: Optional[str] = None,
         dtype: Optional[str] = None,
     ):
@@ -114,6 +118,7 @@ class LinearBlock(BaseBlock):
             out_features=out_features,
             weight_init=weight_init,
             bias_init=bias_init,
+            pooling_module=None,
             reshape_module=Flatten(),
             regularization=regularization,
             regularization_hparams=regularization_hparams,
@@ -122,12 +127,15 @@ class LinearBlock(BaseBlock):
             device=device,
             dtype=dtype,
         )
+        self._add_output_layer(in_features=out_features, device=device, dtype=dtype)
         layer = self.last_layer()
         layer.out_features = out_features
 
     # * Connection methods
     def add_connections_layer(
-        self, sparsity: float, device: Optional[str] = None,
+        self,
+        sparsity: float,
+        device: Optional[str] = None,
     ):
         """Adds connection(s) on random neurons in the last layer
         with weighted probability based on layer distance.

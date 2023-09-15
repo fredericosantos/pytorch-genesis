@@ -6,6 +6,8 @@ from torch.nn import MSELoss, Module, NLLLoss, CrossEntropyLoss
 from torch.nn.modules.loss import _Loss, _WeightedLoss
 import torch.nn.functional as F
 import torch.nn as nn
+from torch.optim.optimizer import Optimizer
+
 from modules.hyperparams_options import *
 
 
@@ -61,7 +63,9 @@ class MSELossClamp(MSELoss):
             condition2 = input < 0
             # when it predicts that it is NOT the class
             condition1 = input < 0
-            input[condition0 & condition2 & condition1] = input[condition0 & condition2] / (self.num_classes - 1)
+            input[condition0 & condition2 & condition1] = input[
+                condition0 & condition2
+            ] / (self.num_classes - 1)
             mask = torch.ones_like(input)
             mask[condition0 & condition2 & condition1] = 0
             self.register_buffer("mask", mask)
@@ -106,7 +110,9 @@ class preCEL(_Loss):
             condition1 = input < 0
             # when it predicts that it is NOT the class
             mask = torch.ones_like(input)
-            mask[condition0 & condition1] = mask[condition0 & condition1] / (self.num_classes - 1)
+            mask[condition0 & condition1] = mask[condition0 & condition1] / (
+                self.num_classes - 1
+            )
             self.register_buffer("mask", mask)
 
         input = input * self.mask
@@ -158,7 +164,9 @@ class FocalLoss(torch.nn.CrossEntropyLoss):
 
 
 class SynthLoss(torch.nn.CrossEntropyLoss):
-    def __init__(self, alpha=None, a=1, b=1, c=1, gamma=2, epsilon=0, g=1, f=1, reduction="mean"):
+    def __init__(
+        self, alpha=None, a=1, b=1, c=1, gamma=2, epsilon=0, g=1, f=1, reduction="mean"
+    ):
         super().__init__(weight=alpha, reduction=reduction)
         self.a = a
         self.b = b
@@ -175,3 +183,4 @@ class SynthLoss(torch.nn.CrossEntropyLoss):
         poly_loss = self.epsilon * ((self.g - pt) ** self.f)
         synth_loss = focal_loss * ce_loss + poly_loss
         return synth_loss
+

@@ -1,13 +1,20 @@
-from typing import Any, Dict, Literal, Union, List, Tuple, Optional, get_args
+from typing import List, Literal, Tuple, Optional
 import torch as torch
+from re import match
 
 from torch import Tensor
-from torch.nn import Module, Flatten, Identity, AdaptiveAvgPool2d, LogSoftmax, InstanceNorm1d, BatchNorm1d, Softmax
+from torch.nn import Module, Flatten, AdaptiveAvgPool2d
 
 from torchmetrics import MetricCollection
 
-from modules.base.modules import Layer, Reshape
-from modules.hyperparams_options import *
+from modules.base.modules import Layer
+from modules.hyperparams_options import (
+    BLOCK_TYPES,
+    WEIGHT_INITS,
+    BIAS_INITS,
+    REGULARIZATIONS,
+    ACTIVATIONS,
+)
 import modules.activation_functions as activations
 import modules.regularization_functions as regularizations
 import modules.param_init as param_init
@@ -20,11 +27,11 @@ class BaseBlock(Module):
         # block parameters
         block_type: BLOCK_TYPES,
         block_branch: bool,
-        connection_weights: List[int],
         connection_index: Tuple[int, int],
         freeze_evolved: bool,
-        input_pooling: bool,
-        input_reshape: bool,
+        in_pooling: bool,
+        in_reshape: bool,
+        input_dims: Tuple[int],
         # main layer parameters
         layers_bias: bool,
         layers_weight_init: WEIGHT_INITS,
@@ -52,10 +59,10 @@ class BaseBlock(Module):
         self.block_branch = block_branch
         self.num_outputs = num_outputs
         self.connection_index = connection_index
-        self.connection_weights = connection_weights
         self.freeze_evolved = freeze_evolved
-        self.input_pooling = input_pooling
-        self.input_reshape = input_reshape
+        self.in_pooling = in_pooling
+        self.in_reshape = in_reshape
+        self.input_dims = input_dims
 
         # main layer parameters
         self.layers_bias = layers_bias
@@ -89,45 +96,42 @@ class BaseBlock(Module):
         self.valid_metrics: MetricCollection
         self.test_metrics: MetricCollection
 
+        # Layers
         self.layer_out: Layer
         self.downsample: Layer
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, List[Tensor]]:
+    def _forward_layers(self, x: Tensor) -> Tuple[Tensor, List[Tensor]]:
         layers_output = []
-        if hasattr(self, "downsample"):
-            identity = self.downsample(x)
-        else:
-            identity = None
-        x = self.get_submodule("layer_0")(x, identity if self.num_layers == 1 else None)
-        layers_output.append(x)
-        for n in range(1, self.num_layers):
+        for n in range(self.num_layers):
             layer: Layer = self.get_submodule(f"layer_{n}")
-            x = layer(x, identity if n == self.num_layers - 1 else None)
+            x = layer.forward(x)
             layers_output.append(x)
+        return x, layers_output
 
-        y_hat = self.layer_out(x)
+    def _forward_layer_out(self, x: Tensor) -> Tensor:
+        return self.layer_out(x)
+
+    def forward(self, x: Tensor) -> Tuple[Tensor, List[Tensor]]:
+        x, layers_output = self._forward_layers(x)
+        y_hat = self._forward_layer_out(x)
         return y_hat, layers_output
 
-    def reset_parameters(self, layer_type: Optional[LAYER_TYPES] = None):
-        for name, layer in self.named_modules():
-            if isinstance(layer, Layer):
-                if layer_type == "layers" and "layer_out" not in name:
-                    layer.reset_parameters()
-                elif layer_type == "output" and "layer_out" in name:
-                    layer.reset_parameters()
-                elif layer_type is None:
-                    layer.reset_parameters()
+    def reset_parameters(self):
+        for name, module in self.named_children():
+            if hasattr(module, "reset_parameters"):
+                module.reset_parameters()
 
     def _add_layer(
         self,
         main_module: Module,
         name: str,
         out_features: int,
+        pooling_module: Optional[Module],
         reshape_module: Optional[Module],
         regularization: Optional[REGULARIZATIONS],
-        regularization_hparams: dict,
+        regularization_hparams: Optional[dict],
         activation_fn: Optional[ACTIVATIONS],
-        activation_fn_hparams: dict,
+        activation_fn_hparams: Optional[dict],
         weight_init: Optional[WEIGHT_INITS],
         bias_init: Optional[BIAS_INITS],
         device: Optional[str],
@@ -138,6 +142,7 @@ class BaseBlock(Module):
             main_module=main_module,
             name=name,
             out_features=out_features,
+            pooling_module=pooling_module,
             reshape_module=reshape_module,
             regularization=regularization,
             regularization_hparams=regularization_hparams,
@@ -146,9 +151,11 @@ class BaseBlock(Module):
             device=device,
             dtype=dtype,
         )
-        self.num_layers += 1
+        # if name is layer_n, where n is any number, then increment num_layers
+        if match(r"layer_\d+", name):
+            self.num_layers += 1
         # Output Layer
-        self._add_output_layer(out_features, device, dtype)
+        # self._add_output_layer(out_features, device, dtype)
 
     def _make_layer(
         self,
@@ -157,8 +164,13 @@ class BaseBlock(Module):
         weight_init: Optional[WEIGHT_INITS],
         bias_init: Optional[BIAS_INITS],
     ):
+        # delete layer_out if it exists
+        if hasattr(self, "layer_out"):
+            delattr(self, "layer_out")
         # Layer
-        weight_init_hparams = param_init.get_weight_init_hparams(weight_init, activation_fn)
+        weight_init_hparams = param_init.get_weight_init_hparams(
+            weight_init, activation_fn
+        )
         bias_init_hparams = param_init.get_bias_init_hparams(bias_init)
         self.add_module(
             name,
@@ -175,22 +187,23 @@ class BaseBlock(Module):
         main_module: Module,
         name: str,
         out_features: int,
-        reshape_module: Module,
+        pooling_module: Optional[Module],
+        reshape_module: Optional[Module],
         regularization: Optional[REGULARIZATIONS],
-        regularization_hparams: dict,
+        regularization_hparams: Optional[dict],
         activation_fn: Optional[ACTIVATIONS],
-        activation_fn_hparams: dict,
+        activation_fn_hparams: Optional[dict],
         device: Optional[str],
         dtype: Optional[str],
     ):
         layer: Layer = self.get_submodule(name)
 
         # Main Pooling
-        if self.input_pooling and self.num_layers == 0:
-            self._add_pooling_module(layer)
+        if self.in_pooling and self.num_layers == 0:
+            self._add_pooling_module(layer, pooling_module)
 
         # Main Reshape (Flatten/Reshape)
-        if self.input_reshape and self.num_layers == 0:
+        if self.in_reshape and self.num_layers == 0:
             self._add_reshape_module(layer, reshape_module)
 
         # Main module
@@ -198,14 +211,25 @@ class BaseBlock(Module):
 
         # Regularization
         self._add_regularization_module(
-            layer, self.block_type, out_features, regularization, regularization_hparams, device, dtype
+            layer,
+            self.block_type,
+            out_features,
+            regularization,
+            regularization_hparams,
+            device,
+            dtype,
         )
 
+        # Activation
         self._add_activation_fn_module(layer, activation_fn, activation_fn_hparams)
         layer.reset_parameters()
 
-    def _add_output_layer(self, in_features: int, device: Optional[str], dtype: Optional[str]):
-        self._make_layer(f"layer_out", None, self.output_weight_init, self.output_bias_init)
+    def _add_output_layer(
+        self, in_features: int, device: Optional[str], dtype: Optional[str]
+    ):
+        self._make_layer(
+            "layer_out", None, self.output_weight_init, self.output_bias_init
+        )
         # Output Pooling
         if self.output_pooling:
             self._add_pooling_module(self.layer_out)
@@ -238,10 +262,11 @@ class BaseBlock(Module):
         # TODO: Add activation function at output layer (after thesis delivery)
         self.layer_out.reset_parameters()
 
-    # TODO: Pool (1,1) ?
-    def _add_pooling_module(self, layer: Layer):
+    def _add_pooling_module(
+        self, layer: Layer, pooling_module: Optional[Module] = None
+    ):
         del layer.pooling
-        layer.add_module("pooling", AdaptiveAvgPool2d((1, 1)))
+        layer.add_module("pooling", pooling_module or AdaptiveAvgPool2d((1, 1)))
 
     def _add_reshape_module(self, layer: Layer, reshape_module: Module):
         del layer.reshape
@@ -258,10 +283,17 @@ class BaseBlock(Module):
         dtype,
     ):
         if regularization is None:
-            return
-        if regularization.lower() == "instancenorm":
-            if hasattr(layer, "out_width") and layer.out_width == 1 and layer.out_height == 1:
-                return  # No need to add instance normalization for (n, c, 1, 1) output of convolutions
+            reg = regularizations.get_module(fn=regularization)
+
+        elif regularization.lower() == "instancenorm":
+                if (
+                    hasattr(layer, "out_width")
+                    and layer.out_width == 1
+                    and layer.out_height == 1
+                ):
+                    # No need to add instance normalization for (n, c, 1, 1)
+                    #  output of convolutions
+                    return
 
         hparams = regularizations.get_hparams(
             fn=regularization,
@@ -273,15 +305,25 @@ class BaseBlock(Module):
             dtype=dtype,
         )
         if isinstance(hparams, dict):
-            hparams |= regularization_hparams if regularization_hparams is not None else {}
+            hparams |= (
+                regularization_hparams if regularization_hparams is not None else {}
+            )
         else:
-            hparams = regularization_hparams if regularization_hparams is not None else {}
-        reg = regularizations.get_module(fn=regularization, block_type=layer_type, **hparams)
+            hparams = (
+                regularization_hparams if regularization_hparams is not None else {}
+            )
+        reg = regularizations.get_module(
+            fn=regularization, block_type=layer_type, **hparams
+        )
         del layer.regularization
         layer.add_module("regularization", reg)
 
-    def _add_activation_fn_module(self, layer: Layer, activation_fn: ACTIVATIONS, activation_fn_hparams: dict):
-        activation_fn_hparams = activation_fn_hparams or activations.get_hparams(activation_fn)
+    def _add_activation_fn_module(
+        self,
+        layer: Layer,
+        activation_fn: ACTIVATIONS,
+        activation_fn_hparams: Optional[dict],
+    ):
         act_fn = activations.get_module(activation_fn, activation_fn_hparams)
         del layer.activation
         layer.add_module("activation", act_fn)

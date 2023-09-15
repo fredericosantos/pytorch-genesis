@@ -1,10 +1,11 @@
-from typing import List, Optional, Union
-from torch import BoolTensor, Tensor
+from typing import List, Literal, Optional
+from torch import Tensor
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import Module, Flatten, Identity, Sequential, Parameter, LogSoftmax, Softmax, InstanceNorm1d, BatchNorm1d
-from modules.hyperparams_options import *
+from torch.nn import (
+    Module,
+)
+from modules.hyperparams_options import WEIGHT_INITS, BIAS_INITS
 from modules.base.linear_sparse import LinearSparse
 
 import modules.param_init as param_init
@@ -32,16 +33,24 @@ class Layer(Module):
         self.out_width: int
         self.out_height: int
 
-    def forward(self, input: Tensor, identity: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self,
+        input: Tensor,
+        input_residual: Optional[Tensor] = None,
+        input_secondary: Optional[Tensor] = None,
+    ) -> Tensor:
         if self.pooling is not None:
             input = self.pooling(input)
         if self.reshape is not None:
             input = self.reshape(input)
-        input = self.main(input)
+        if input_secondary is None:
+            input = self.main(input)
+        elif input_secondary.shape[2:] == input.shape[2:]:
+            input = self.main(input, input_secondary)
         if self.regularization is not None:
             input = self.regularization(input)
-        if identity is not None:
-            input += identity
+        if input_residual is not None and input_residual.shape == input.shape:
+            input = input + input_residual
         if self.activation is not None:
             input = self.activation(input)
         return input
@@ -53,19 +62,21 @@ class Layer(Module):
         self.requires_grad_(True)
 
     def reset_parameters(self):
-        for module in ["pooling", "reshape", "main"]:
-            m = getattr(self, module)
-            if m is not None:
-                if hasattr(m, "weight") and m.weight is not None:
-                    if self.w_init_fn_ is not None:
-                        self.w_init_fn_(m.weight, **self.w_init_hparams)
-                    else:
-                        m.reset_parameters()
-                if hasattr(m, "bias") and m.bias is not None:
-                    if self.b_init_fn_ is not None:
-                        self.b_init_fn_(m.bias, **self.b_init_hparams)
-                    else:
-                        m.reset_parameters()
+        for name, m in self.named_children():
+            if hasattr(m, "reset_parameters"):
+                if name == "main":
+                    if hasattr(m, "weight") and m.weight is not None:
+                        if self.w_init_fn_ is not None:
+                            self.w_init_fn_(m.weight, **self.w_init_hparams)
+                        else:
+                            m.reset_parameters()
+                    if hasattr(m, "bias") and m.bias is not None:
+                        if self.b_init_fn_ is not None:
+                            self.b_init_fn_(m.bias, **self.b_init_hparams)
+                        else:
+                            m.reset_parameters()
+                else:
+                    m.reset_parameters()
 
 
 class OutputLinear(LinearSparse):
@@ -88,7 +99,9 @@ class OutputLinear(LinearSparse):
         )
         if one_class_only:
             # Only one class is allowed to receive inputs.
-            output_idx = torch.randint(0, 10, (1,), device=device).repeat((1, self.in_features))
+            output_idx = torch.randint(0, 10, (1,), device=device).repeat(
+                (1, self.in_features)
+            )
             weight_mask = torch.zeros_like(self.weight, device=device)
             weight_mask.scatter_(0, output_idx, 1)
             self.register_buffer("weight_mask", weight_mask)
@@ -109,7 +122,16 @@ class Reshape(Module):
 
     def extra_repr(self) -> str:
         return f"channels={self.channels}, height={self.height}, width={self.width}"
-    
+
+
+class Concatenate(Module):
+    def __init__(self, dim: int = 1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: Tensor, x_initial: Tensor) -> Tensor:
+        return torch.cat([x, x_initial], dim=self.dim)
+
 
 class MaxNorm1d(Module):
     def __init__(self):

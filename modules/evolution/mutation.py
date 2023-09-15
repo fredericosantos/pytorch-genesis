@@ -1,22 +1,26 @@
 import random
 import torch as torch
 from copy import deepcopy
-from typing import Any, Callable, List, Tuple, Optional, Literal, Dict, Union, get_args
+from typing import Callable, List, Optional, Literal, Union, get_args
 from pytorch_lightning import Callback, LightningDataModule, LightningModule, Trainer
 from pytorch_lightning.utilities.model_summary import ModelSummary
-from pytorch_lightning.utilities.memory import garbage_collection_cuda, is_oom_error
+from pytorch_lightning.utilities.memory import garbage_collection_cuda
 
-import logging
 
 import numpy as np
 from modules.base.block import BaseBlock
 
-import modules.utils.block_utils as block_utils
 from modules.model import EvoModel
-import modules.regularization_functions as reg_fn
-from modules.hyperparams_options import *
-from tqdm import tqdm, trange
-from rich.progress import track
+from modules.hyperparams_options import (
+    BLOCK_TYPES,
+    MUTATION_TYPES,
+    CONV_TYPES,
+    WEIGHT_INITS,
+    BIAS_INITS,
+    REGULARIZATIONS,
+    ACTIVATIONS,
+)
+from tqdm import trange
 from IPython.display import clear_output
 
 
@@ -32,8 +36,10 @@ class MutationCallback(Callback):
         population: int = 1,
         first_population: int = 1,
         verbose: bool = False,
-        evalutation_method: Literal["train_loss", "valid_loss", "train_acc", "valid_acc"] = "valid_acc",
-        max_num_layers: int = 5,
+        evalutation_method: Literal[
+            "train_loss", "valid_loss", "train_acc", "valid_acc"
+        ] = "valid_acc",
+        max_num_layers: int = 4,
         min_num_layers: int = 1,
         max_channels: int = 512,
         min_channels: int = 32,
@@ -50,11 +56,14 @@ class MutationCallback(Callback):
         self.first_pop = first_population
         self.is_first_gen = True
         self.evalutation_method = evalutation_method
+        assert min_num_layers <= max_num_layers
         self.max_num_layers = max_num_layers
-        self.min_num_layers = min_num_layers
+        self.min_num_layers = min_num_layers - 1
         self.max_channels = max_channels
         self.min_channels = min_channels
-        self.counters = {arg: 0 for arg in ["mutation", "elite", "total_mutations", "initial_search"]}
+        self.counters = {
+            arg: 0 for arg in ["mutation", "elite", "total_mutations", "first_pop"]
+        }
         self.checkpoint = {}
         self.mutation = {}
 
@@ -63,7 +72,9 @@ class MutationCallback(Callback):
         if self.counters["mutation"] == self.num_epochs:
             self._evaluate_mutation(trainer, model)
 
-    def save_checkpoint(self, trainer: Trainer, model: EvoModel, cp_type: MUTATION_TYPES) -> None:
+    def save_checkpoint(
+        self, trainer: Trainer, model: EvoModel, cp_type: MUTATION_TYPES
+    ) -> None:
         """
         Saves the current block and number of blocks.
         """
@@ -77,7 +88,9 @@ class MutationCallback(Callback):
         if model.num_blocks > 0:
             trainer.save_checkpoint(f"mutation_checkpoint_{cp_type}.ckpt", True)
 
-    def load_checkpoint(self, trainer: Trainer, model: EvoModel, cp_type: MUTATION_TYPES) -> None:
+    def load_checkpoint(
+        self, trainer: Trainer, model: EvoModel, cp_type: MUTATION_TYPES
+    ) -> None:
         ckpt = self.checkpoint[cp_type]
         while model.num_blocks >= ckpt["num_blocks"]:
             model.remove_last_block()
@@ -85,47 +98,69 @@ class MutationCallback(Callback):
                 break
         model.freeze_last_block()
         if ckpt["block"] is not None:
-            setattr(model, f"block_{ckpt['num_blocks']-1}", deepcopy(ckpt["block"]))
+            setattr(
+                model,
+                f"block_{ckpt['num_blocks']-1}",
+                deepcopy(ckpt["block"].to(model.device)),
+            )
             model._connect_block(ckpt["block"])
+
         model.num_blocks = deepcopy(ckpt["num_blocks"])
         if model.num_blocks > 0:
             checkpoint = torch.load(f"mutation_checkpoint_{cp_type}.ckpt")
             model.load_state_dict(checkpoint["state_dict"])
 
     def apply_mutation(self, trainer: Trainer, model: EvoModel) -> None:
+        fit_model_only = False
         if self.counters["elite"] == 0:
             self.save_checkpoint(trainer, model, "parent")
             self.save_checkpoint(trainer, model, "elite")
-        mutation_options = self._get_mutations(model, True)
-        initial_mutation = random.choice(mutation_options)
-        mutation_hparams = self._get_mutation_hparams(model, initial_mutation)
-        mutation_to_call = getattr(model, f"{initial_mutation}")
-        mutation_to_call(**mutation_hparams)
+            if (
+                not model.hparams.freeze_evolved
+                and self.pop > 1
+                and not self.is_first_gen
+            ):
+                # TODO: improve on this and set fit_model_only to True
+                fit_model_only = False
+                # print("Fitting model only.")
+                mutation_options = ["fit_model"]
+                mutation_hparams = self._get_mutation_hparams(model, "fit_model")
 
-        self._save_mutation_hparams(model, True)
+        if not fit_model_only:
+            mutation_options = self._get_mutations(model, True)
+            initial_mutation = random.choice(mutation_options)
+            mutation_hparams = self._get_mutation_hparams(model, initial_mutation)
+            mutation_to_call = getattr(model, f"{initial_mutation}")
+            mutation_to_call(**mutation_hparams)
+            self._save_mutation_hparams(model, True)
 
-        num_layers = random.choice(list(range(self.max_num_layers)))
-        layers_added = 0
-        for _ in range(num_layers):
-            mutation_options = self._get_mutations(model, False)
-            mutation = random.choice(mutation_options)
-            layer_hparams = self._get_mutation_hparams(model, mutation)
-            mutation_to_call = getattr(model, f"{mutation}")
-            mutation_to_call(**layer_hparams)
-            self._save_mutation_hparams(model, False)
-            layers_added += 1
-            if model.last_block().block_type in get_args(CONV_TYPES):
-                l = model.last_block().last_layer()
-                if l.out_width == 1 and l.out_height == 1:
-                    break
+            num_layers = random.choice(
+                list(range(self.min_num_layers, self.max_num_layers))
+            )
+            layers_added = 0
+            for _ in range(num_layers):
+                mutation_options = self._get_mutations(model, False)
+                mutation = random.choice(mutation_options)
+                layer_hparams = self._get_mutation_hparams(model, mutation)
+                mutation_to_call = getattr(model, f"{mutation}")
+                mutation_to_call(**layer_hparams)
+                self._save_mutation_hparams(model, False)
+                layers_added += 1
+                if model.last_block().block_type in get_args(CONV_TYPES):
+                    last_layer = model.last_block().last_layer()
+                    if last_layer.out_width == 1 and last_layer.out_height == 1:
+                        break
 
         self.counters["total_mutations"] += 1
         self.counters["elite"] += 1
         if self.is_first_gen:
-            self.counters["initial_search"] += 1
+            self.counters["first_pop"] += 1
         self.configure_optimizers(trainer, model)
         if self._verbose:
-            print(f"MUTATION: {initial_mutation.upper()} WITH {num_layers} LAYERS ~ [{model.num_blocks} BLOCKS]")
+            print(
+                f"MUTATION: {initial_mutation.upper()} WITH "
+                f"{num_layers} LAYERS ~ [{model.num_blocks} BLOCKS]"
+            )
 
     def _evaluate_mutation(self, trainer: Trainer, model: EvoModel) -> None:
         improved = False
@@ -153,7 +188,9 @@ class MutationCallback(Callback):
             condition = True
 
         if self._verbose:
-            print(f"[EVALUATING MUTATION] [ELITE: {self.counters['elite']} / {self.pop}]")
+            print(
+                f"[EVALUATING MUTATION] [ELITE: {self.counters['elite']} / {self.pop}]"
+            )
             if hasattr(self, "metrics"):
                 print(f"ACCURACY {valid_elite_acc:.2%} -> {valid_acc:.2%}")
                 print(f"LOSS {valid_elite_loss:.4} -> {valid_loss:.4}")
@@ -202,9 +239,12 @@ class MutationCallback(Callback):
         rnd_sparsity = random.choice(np.linspace(0.05, 1.0, 20))
         linear_nodes = [64, 128, 256, 512, 1024]
         add_block_common = dict(
-            block_branch=random.choice([True, False]) if model.hparams.block_branch else False,
+            block_branch=random.choice([True, False])
+            if model.hparams.block_branch
+            else False,
             # added possibility of having class specialization but only 20% of the time
-            output_class_specialization=random.choice([True, False, False, False, False]), 
+            output_class_specialization=False,
+            # output_class_specialization=random.choice([True] * 1 + [False] * 1),
             layers_weight_init=random.choice(list(get_args(WEIGHT_INITS))),
             layers_bias_init=random.choice(list(get_args(BIAS_INITS))),
             activation_fn=random.choice(list(get_args(ACTIVATIONS))),
@@ -225,13 +265,21 @@ class MutationCallback(Callback):
                 layers_bias=False,
                 residual_connection=(res_cxt := random.choice([True, False])),
                 keep_input_dims=random.choice([True, False]) if res_cxt else False,
+                # keep_input_dims=random.choice([True, False]),
+                # keep_input_dims=False,
+                # regularization=random.choice(list(get_args(REGULARIZATIONS)) + [None]),  # noqa: E501
                 regularization="BatchNorm",
                 regularization_hparams=None,
             )
             | add_block_common,
-            "add_layer_linear": dict(out_features=None, sparsity=rnd_sparsity,) | add_layer_common,
+            "add_layer_linear": dict(
+                out_features=None,
+                sparsity=rnd_sparsity,
+            )
+            | add_layer_common,
             "add_layer_conv": {} | add_layer_common,
         }
+        mutation_options |= {"fit_model": {}}
         return mutation_options[mutation]
 
     def _save_mutation_hparams(self, model: EvoModel, new_block: bool = False):
@@ -251,7 +299,10 @@ class MutationCallback(Callback):
                 regularization_hparams=b.regularization_hparams,
             )
             if b.block_type == "linear":
-                block_hparams |= dict(layers_bias=b.layers_bias, layers_sparse=b.layers_sparse,)
+                block_hparams |= dict(
+                    layers_bias=b.layers_bias,
+                    layers_sparse=b.layers_sparse,
+                )
             elif b.block_type == "conv":
                 block_hparams |= dict(
                     layers_bias=b.layers_bias,
@@ -265,18 +316,24 @@ class MutationCallback(Callback):
             self.mutation["layers_hparams"] = dict()
 
         if b.block_type == "linear":
-            layer_hparams = dict(out_features=b.last_layer().main.out_features, sparsity=b.last_layer().main.sparsity)
+            layer_hparams = dict(
+                out_features=b.last_layer().main.out_features,
+                sparsity=b.last_layer().main.sparsity,
+            )
         elif b.block_type == "conv":
             layer_hparams = dict(
                 out_channels=b.last_layer().main.out_channels,
                 kernel_size=b.last_layer().main.kernel_size,
                 stride=b.last_layer().main.stride,
                 padding=b.last_layer().main.padding,
+                dilation=b.last_layer().main.dilation,
             )
         self.mutation["layers_hparams"][b.num_layers - 1] = layer_hparams
         self.mutation["num_layers"] = b.num_layers
 
-    def _log_mutation_hparams(self, trainer: Trainer, model: EvoModel, improved: bool, valid_acc: float):
+    def _log_mutation_hparams(
+        self, trainer: Trainer, model: EvoModel, improved: bool, valid_acc: float
+    ):
         self.mutation["improved"] = improved
         if model.logger is not None:
             tb = model.logger.experiment
@@ -284,25 +341,19 @@ class MutationCallback(Callback):
             if improved:
                 trainer.logger.log_graph(model)
 
-    # TODO: remove this
-    def _log_tb_total_params(self, trainer: Trainer, model: EvoModel):
-        if trainer.logger is not None:
-            m_s = ModelSummary(model)
-            model.log("parameters_stats/total", m_s.total_parameters)
-            model.log("parameters_stats/trainable", m_s.trainable_parameters)
-            model.log("parameters_stats/trainable_ratio", m_s.trainable_parameters / m_s.total_parameters)
-
     def _reset_counters(self, elite: bool = True):
         self.counters["mutation"] = 0
         if elite:
             self.counters["elite"] = 0
-        if self.counters["initial_search"] == self.first_pop and self.is_first_gen:
+        if self.counters["first_pop"] == self.first_pop and self.is_first_gen:
             self.is_first_gen = False
             self.pop = self._pop
 
     def _save_metrics(self, trainer: Trainer, key: MUTATION_TYPES):
-        """If given `elite` as key, saves the `logged_metrics` to the `metrics['elite']` dict.
-        If given `parent` as key, stores the current `metrics['elite']` under `metrics['parent']`
+        """If given `elite` as key, saves the `logged_metrics` to
+        the `metrics['elite']` dict.
+        If given `parent` as key, stores the current `metrics['elite']`
+        under `metrics['parent']`
         """
 
         if not hasattr(self, "metrics"):
@@ -322,7 +373,9 @@ class MutationCallback(Callback):
         else:
             raise ValueError(f"key {key} not recognized.")
 
-    def configure_optimizers(self, trainer: Trainer, model: EvoModel, lr: Optional[float] = None):
+    def configure_optimizers(
+        self, trainer: Trainer, model: EvoModel, lr: Optional[float] = None
+    ):
         if lr is not None:
             model.hparams.lr = lr
         model.configure_optimizers()
@@ -331,10 +384,18 @@ class MutationCallback(Callback):
     # TODO: Implement resnet block mutation
     def _add_resnet_block(self, model: EvoModel):
         model.add_block_conv(
-            kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), residual_connection=True,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+            dilation=(1, 1),
+            residual_connection=True,
         )
         model.add_layer_conv(
-            model.last_block().last_layer().out_channels, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
+            model.last_block().last_layer().out_channels,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+            dilation=(1, 1),
         )
 
 
@@ -363,7 +424,7 @@ class MutationTrainer:
         fitness_threshold: Optional[float] = None,
         plot: bool = True,
         enable_mutation_progress_bar: bool = True,
-        progress_bar_position: int = 0
+        progress_bar_position: int = 0,
     ) -> None:
         mutation = False
         for i, callback in enumerate(trainer.callbacks):
@@ -376,24 +437,42 @@ class MutationTrainer:
             mutation = False
         is_first_gen: bool = mut_cb.is_first_gen if mutation else False
         total_mutations = (
-            (generations) * mut_cb._pop + (mut_cb.first_pop - mut_cb._pop if is_first_gen else 0)
+            (generations) * mut_cb._pop
+            + (mut_cb.first_pop - mut_cb._pop if is_first_gen else 0)
             if mutation
             else generations
         )
-        for i in trange(total_mutations, desc="Evolving",disable=not enable_mutation_progress_bar, position=progress_bar_position, leave=False):
+        for i in trange(
+            total_mutations,
+            desc="Evolving",
+            disable=not enable_mutation_progress_bar,
+            position=progress_bar_position,
+            leave=False,
+        ):
             if mutation:
+                mut_cb: MutationCallback
                 mut_cb.apply_mutation(trainer, model)
             if reset_parameters:
                 model.reset_parameters()
             if auto_scale_batch_size:
-                trainer_extra = Trainer(gpus="auto", enable_progress_bar=False, progress_bar_refresh_rate=0)
-                trainer_extra.tuner.scale_batch_size(model, datamodule=self.datamodule, init_val=min_batch_size)
+                trainer_extra = Trainer(
+                    gpus="auto", enable_progress_bar=False, progress_bar_refresh_rate=0
+                )
+                trainer_extra.tuner.scale_batch_size(
+                    model, datamodule=self.datamodule, init_val=min_batch_size
+                )
                 del trainer_extra
                 garbage_collection_cuda()
             if lr_find:
-                trainer_extra = Trainer(gpus="auto", enable_progress_bar=False, progress_bar_refresh_rate=0)
+                trainer_extra = Trainer(
+                    gpus="auto", enable_progress_bar=False, progress_bar_refresh_rate=0
+                )
                 lr_finder = trainer_extra.tuner.lr_find(
-                    model, datamodule=self.datamodule, min_lr=min_lr, max_lr=max_lr, num_training=lr_find_num_training,
+                    model,
+                    datamodule=self.datamodule,
+                    min_lr=min_lr,
+                    max_lr=max_lr,
+                    num_training=lr_find_num_training,
                 )
                 if plot:
                     lr_finder.plot(True, True)
@@ -403,13 +482,18 @@ class MutationTrainer:
                 # TODO: empirically prove that lr * 2 is best
                 model.hparams.lr_scheduler_hparams["max_lr"] = model.hparams.lr * 1
                 if enable_mutation_progress_bar:
-                    print(f"Max Learning Rate: {model.hparams.lr_scheduler_hparams['max_lr']}")
+                    print(
+                        "Max Learning Rate: "
+                        f"{model.hparams.lr_scheduler_hparams['max_lr']}"
+                    )
             if trainer.current_epoch != 0:
                 trainer.fit_loop.max_epochs += mutation_epochs
             else:
                 trainer.fit_loop.max_epochs = mutation_epochs
             model.hparams.lr_scheduler_hparams["epochs"] = mutation_epochs
-            model.hparams.lr_scheduler_hparams["steps_per_epoch"] = len(self.datamodule.train_dataloader())
+            model.hparams.lr_scheduler_hparams["steps_per_epoch"] = len(
+                self.datamodule.train_dataloader()
+            )
             if update_check_val_every_n_epoch:
                 trainer.check_val_every_n_epoch = mutation_epochs
             if mutation:
@@ -424,25 +508,38 @@ class ParameterMonitor(Callback):
     def on_validation_epoch_end(self, trainer: Trainer, model: EvoModel) -> None:
         if hasattr(model, "logger"):
             with torch.no_grad():
-                y_hat, all_blocks_y_hat = model(torch.ones_like(model.example_input_array, device=model.device))
+                y_hat, all_blocks_y_hat = model(
+                    torch.ones_like(model.example_input_array, device=model.device)
+                )
 
             for i in range(model.num_blocks):
                 block: BaseBlock = model.get_submodule(f"block_{i}")
                 if not block.is_frozen:
                     model.logger.experiment.add_histogram(
-                        f"outputs/block_{i}", all_blocks_y_hat[i], global_step=model.global_step
+                        f"outputs/block_{i}",
+                        all_blocks_y_hat[i],
+                        global_step=model.global_step,
                     )
-            model.logger.experiment.add_histogram(f"outputs/model", y_hat, global_step=model.global_step)
+            model.logger.experiment.add_histogram(
+                "outputs/model", y_hat, global_step=model.global_step
+            )
 
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    model.logger.experiment.add_histogram(f"parameters/{name}", param, global_step=model.global_step)
+                    model.logger.experiment.add_histogram(
+                        f"parameters/{name}", param, global_step=model.global_step
+                    )
 
-    def on_validation_epoch_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+    def on_validation_epoch_start(
+        self, trainer: Trainer, pl_module: LightningModule
+    ) -> None:
         self._log_tb_total_params(model=pl_module)
 
     def _log_tb_total_params(self, model: EvoModel):
         m_s = ModelSummary(model)
         model.log("parameters_stats/total", m_s.total_parameters)
         model.log("parameters_stats/trainable", m_s.trainable_parameters)
-        model.log("parameters_stats/trainable_ratio", m_s.trainable_parameters / m_s.total_parameters)
+        model.log(
+            "parameters_stats/trainable_ratio",
+            m_s.trainable_parameters / m_s.total_parameters,
+        )

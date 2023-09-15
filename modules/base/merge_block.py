@@ -1,13 +1,18 @@
-from typing import Any, Dict, Literal, Union, List, Tuple, Optional, get_args
-import torch
+from typing import Literal, List, Optional
 
 from torch import Tensor
-from torch.nn import Module, Flatten, Identity, AdaptiveAvgPool2d, LogSoftmax, InstanceNorm1d, BatchNorm1d, Softmax
+from torch.nn import (
+    Module,
+    Identity,
+    LogSoftmax,
+    Softmax,
+)
 
 
-from modules.hyperparams_options import *
+from modules.hyperparams_options import ACTIVATIONS, REGULARIZATIONS
 import modules.activation_functions as activations
 import modules.regularization_functions as regularizations
+
 
 class MergeBlock(Module):
     def __init__(
@@ -20,13 +25,18 @@ class MergeBlock(Module):
     ):
         super().__init__()
         if regularization is not None:
-            reg_hparams = regularizations.get_hparams(fn=regularization, block_type="linear", num_features=num_classes,)
-            reg = regularizations.get_module(fn=regularization, block_type="linear", **reg_hparams)
+            reg_hparams = regularizations.get_hparams(
+                fn=regularization,
+                block_type="linear",
+                num_features=num_classes,
+            )
+            reg = regularizations.get_module(
+                fn=regularization, block_type="linear", **reg_hparams
+            )
         else:
             reg = Identity()
         self.add_module("regularization", reg)
         self.add = Add()
-        activation_fn_hparams = activation_fn_hparams or activations.get_hparams(activation_fn)
         self.activation = activations.get_module(activation_fn, activation_fn_hparams)
         if type_softmax is None:
             self.softmax = Identity()
@@ -44,6 +54,7 @@ class MergeBlock(Module):
                 y_hat = self.regularization(y_hat)
         y_hat = self.activation(y_hat)
         return y_hat
+
 
 class Add(Module):
     def __init__(self):

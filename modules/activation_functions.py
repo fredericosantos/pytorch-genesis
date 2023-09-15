@@ -1,20 +1,19 @@
 from typing import (
     Callable,
-    List,
-    Literal,
     Optional,
 )
 from torch import Tensor
-from torch.nn import Module, ReLU, Hardtanh, Tanh, Sigmoid, LeakyReLU, GELU, Identity
-from modules.hyperparams_options import *
+from torch.nn import Module, ReLU, Tanh, Sigmoid, LeakyReLU, GELU, Identity
+from modules.hyperparams_options import ACTIVATIONS
 
 
 def get_module(fn: Optional[ACTIVATIONS], hparams: Optional[dict] = None) -> Callable:
-    if hparams is None:
-        hparams = get_hparams(fn)
     if fn is None:
-        return Identity(**hparams)
-    elif fn.lower() == "ReLU".lower():
+        return Identity()
+    elif hparams is None:
+        hparams = get_hparams(fn)
+
+    if fn.lower() == "ReLU".lower():
         return ReLU(**hparams)
     elif fn.lower() == "GELU".lower():
         return GELU()
@@ -36,7 +35,7 @@ def get_hparams(fn: Optional[ACTIVATIONS]) -> dict:
     if fn is None:
         return {}
     elif fn.lower() == "ReLU".lower():
-        inplace: bool = False
+        inplace: bool = True
         return dict(inplace=inplace)
     elif fn.lower() == "GELU".lower():
         return {}
@@ -46,7 +45,7 @@ def get_hparams(fn: Optional[ACTIVATIONS]) -> dict:
         return {}
     elif fn.lower() == "LeakyReLU".lower():
         negative_slope: float = 0.01
-        inplace: bool = False
+        inplace: bool = True
         return dict(negative_slope=negative_slope, inplace=inplace)
     else:
         raise NotImplementedError(
@@ -72,9 +71,11 @@ class AoN(Module):
     :math:`\alpha=0.45`.
 
     Args:
-        alpha (float): the :math:`\alpha` value for the activation function. Default: 0.45
+        alpha (float): the :math:`\alpha` value for the activation function. 
+        Default: 0.45
 
-        inplace (bool, optional): can optionally do the operation in-place. Default: ``False``
+        inplace (bool, optional): can optionally do the operation in-place. 
+        Default: ``False``
 
     Shape:
         - Input: :math:`(*)`, where :math:`*` means any number of dimensions.
@@ -86,7 +87,11 @@ class AoN(Module):
     alpha: float
     inplace: bool
 
-    def __init__(self, alpha: float = 0.45, inplace: bool = False,) -> None:
+    def __init__(
+        self,
+        alpha: float = 0.45,
+        inplace: bool = False,
+    ) -> None:
         super().__init__()
 
         self.alpha = alpha
@@ -101,4 +106,3 @@ class AoN(Module):
     def extra_repr(self) -> str:
         inplace_str = ", inplace=True" if self.inplace else ""
         return f"alpha={self.alpha}" + inplace_str
-
