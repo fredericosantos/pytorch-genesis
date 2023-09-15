@@ -1,19 +1,4 @@
-### Deep learning project seed
-Use this seed to start new deep learning / ML projects.
-
-- Built in setup.py
-- Built in requirements
-- Examples with MNIST
-- Badges
-- Bibtex
-
-#### Goals  
-The goal of this seed is to structure ML paper-code the same so that work can easily be extended and replicated.   
-
-### DELETE EVERYTHING ABOVE FOR YOUR PROJECT  
- 
----
-
+### 🚧 Under construction
 <div align="center">    
  <img alt="PyTorch Genesis" src="https://github.com/fredericosantos/pytorch-genesis/blob/master/pytorch_genesis_logo_text.png" width="800px" style="max-width: 100%;">
 
